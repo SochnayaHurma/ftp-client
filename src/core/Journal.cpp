@@ -124,9 +124,9 @@ bool Journal::logOperation(TransferDirection direction,
 
     for (const PreflightItem& item : plan) {
         itemQuery.bindValue(QStringLiteral(":operation_id"), operationId);
-        itemQuery.bindValue(QStringLiteral(":relative_path"), item.relativePath);
-        itemQuery.bindValue(QStringLiteral(":source_path"), item.sourcePath);
-        itemQuery.bindValue(QStringLiteral(":destination_path"), item.destinationPath);
+        itemQuery.bindValue(QStringLiteral(":relative_path"), item.relativePath.isEmpty() ? QStringLiteral("-") : item.relativePath);
+        itemQuery.bindValue(QStringLiteral(":source_path"), item.sourcePath.isEmpty() ? QStringLiteral("-") : item.sourcePath);
+        itemQuery.bindValue(QStringLiteral(":destination_path"), item.destinationPath.isEmpty() ? QStringLiteral("-") : item.destinationPath);
         itemQuery.bindValue(QStringLiteral(":status"), statusToText(item.status));
         itemQuery.bindValue(QStringLiteral(":risk"), riskToText(item.risk));
         itemQuery.bindValue(QStringLiteral(":source_sha256"), item.sourceSha256);

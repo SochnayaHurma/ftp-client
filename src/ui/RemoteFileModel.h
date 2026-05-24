@@ -3,9 +3,9 @@
 #include "../core/storage/IStorageBackend.h"
 #include "FileFilterMode.h"
 
-#include <QIcon>
 #include <QStandardItemModel>
 #include <QString>
+#include <QStringList>
 
 class RemoteFileModel final : public QStandardItemModel {
     Q_OBJECT
@@ -14,7 +14,8 @@ public:
     enum CustomRole {
         AbsolutePathRole = Qt::UserRole + 1,
         RelativePathRole,
-        IsDirectoryRole
+        IsDirectoryRole,
+        ParentDirectoryRole
     };
 
     explicit RemoteFileModel(QObject* parent = nullptr);
@@ -35,13 +36,19 @@ public:
     QString absolutePath(const QModelIndex& index) const;
     QString relativePath(const QModelIndex& index) const;
     bool isDirectory(const QModelIndex& index) const;
+    bool isNavigationUp(const QModelIndex& index) const;
+    bool isParentDirectoryRow(const QModelIndex& index) const;
 
 private:
     QString formatSize(const stl::StorageObjectInfo& info) const;
-    QIcon iconForObject(const stl::StorageObjectInfo& info) const;
+    QString displayNameForObject(const stl::StorageObjectInfo& info) const;
+    QString parentPath() const;
+    bool canShowParentRow() const;
+    void appendParentRow();
     bool acceptsObject(const stl::StorageObjectInfo& info) const;
     bool nameMatches(const QString& name) const;
     bool wildcardMatches(const QString& name, const QString& pattern) const;
+    QStringList filterParts() const;
 
     const stl::IStorageBackend* m_backend = nullptr;
     QString m_currentPath = QStringLiteral("/");

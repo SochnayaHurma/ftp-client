@@ -16,6 +16,7 @@
 #include <QEventLoop>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QItemSelectionModel>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
@@ -50,7 +51,6 @@ MainWindow::MainWindow(QWidget* parent)
     }
 
     appendLog(QStringLiteral("Хранилище профилей: %1").arg(m_profileStore.storagePath()));
-    appendLog(QStringLiteral("Stage 4: добавлены фильтры файлов, сохранённые профили подключений и окно истории операций SQLite."));
 }
 
 MainWindow::~MainWindow() = default;
@@ -76,10 +76,12 @@ void MainWindow::buildUi() {
     m_queueSummaryLabel = ui->queueSummaryLabel;
     m_executeButton = ui->executeButton;
     m_cancelButton = ui->cancelButton;
+    m_preserveSourceHierarchyCheckBox = ui->preserveSourceHierarchyCheckBox;
 
     auto* chooseLocalButton = ui->chooseLocalButton;
     auto* chooseRemoteButton = ui->chooseRemoteButton;
     auto* remoteUpButton = ui->remoteUpButton;
+    remoteUpButton->setVisible(false);
     auto* connectRemoteButton = ui->connectRemoteButton;
     auto* emulatorButton = ui->emulatorButton;
     auto* applyFilterButton = ui->applyFilterButton;
@@ -195,6 +197,12 @@ void MainWindow::configureLocalModel(QFileSystemModel* model, QTreeView* view, c
     view->sortByColumn(0, Qt::AscendingOrder);
     view->setColumnWidth(0, 320);
 
+    if (auto* selection = view->selectionModel()) {
+        disconnect(selection, nullptr, this, nullptr);
+        connect(selection, &QItemSelectionModel::selectionChanged, this, [this]() {
+            clearCurrentPlan(QStringLiteral("План сброшен: изменён выбор в левой панели"));
+        });
+    }
 }
 
 void MainWindow::setLocalRoot(const QString& path) {
@@ -202,6 +210,7 @@ void MainWindow::setLocalRoot(const QString& path) {
     m_localPathEdit->setText(normalized);
     m_localBackend.setRoot(normalized);
     configureLocalModel(m_localModel, m_localView, normalized);
+    clearCurrentPlan(QStringLiteral("План сброшен: изменён локальный корень"));
     applyFilterToModels();
 }
 
@@ -210,6 +219,7 @@ void MainWindow::setRemoteEmulatorRoot(const QString& path) {
     m_useCurlRemoteBackend = false;
     m_remotePathEdit->setText(normalized);
     m_remoteEmulatorBackend.setRoot(normalized);
+    clearCurrentPlan(QStringLiteral("План сброшен: изменена правая папка"));
     refreshRemotePanel();
 }
 
@@ -257,14 +267,20 @@ void MainWindow::refreshRemotePanel() {
     m_remoteView->setModel(m_remoteModel);
     m_remoteView->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_remoteView->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_remoteView->setSortingEnabled(true);
+    m_remoteView->setSortingEnabled(false); // первая строка "📁 .." всегда остаётся сверху
+
+    if (auto* selection = m_remoteView->selectionModel()) {
+        disconnect(selection, nullptr, this, nullptr);
+        connect(selection, &QItemSelectionModel::selectionChanged, this, [this]() {
+            clearCurrentPlan(QStringLiteral("План сброшен: изменён выбор в правой панели"));
+        });
+    }
 
     QString error;
     if (!m_remoteModel->reload(&error)) {
         appendLog(QStringLiteral("Ошибка обновления удалённой панели: %1").arg(error));
     }
 
-    m_remoteView->sortByColumn(0, Qt::AscendingOrder);
     m_remoteView->setColumnWidth(0, 320);
     m_remoteView->setColumnWidth(1, 90);
     m_remoteView->setColumnWidth(2, 110);
@@ -367,6 +383,11 @@ void MainWindow::remoteGoUp() {
 }
 
 void MainWindow::onRemoteDoubleClicked(const QModelIndex& index) {
+    if (m_remoteModel->isNavigationUp(index)) {
+        remoteGoUp();
+        return;
+    }
+
     if (!m_remoteModel->isDirectory(index)) {
         return;
     }
@@ -399,6 +420,9 @@ QStringList MainWindow::selectedRemotePaths() const {
     const QModelIndexList indexes = m_remoteView->selectionModel()->selectedRows(0);
 
     for (const QModelIndex& index : indexes) {
+        if (m_remoteModel->isNavigationUp(index)) {
+            continue;
+        }
         const QString path = m_remoteModel->absolutePath(index);
         if (!path.isEmpty()) {
             paths.push_back(path);
@@ -434,6 +458,7 @@ void MainWindow::analyze(stl::TransferDirection direction) {
                                                             : static_cast<const stl::IStorageBackend&>(m_localBackend);
 
     m_currentPlan = m_analyzer.analyze(selected, sourceBackend, destinationBackend);
+    m_analyzedSelectionPaths = selected;
     displayPlan(m_currentPlan);
     displayQueue(m_currentPlan);
     appendLog(QStringLiteral("Сформирован план через backend-слой: %1, объектов: %2")
@@ -492,6 +517,14 @@ void MainWindow::colorizePlanRow(int row, const stl::PreflightItem& item) {
 void MainWindow::executeCurrentPlan() {
     if (m_currentPlan.isEmpty()) {
         QMessageBox::information(this, QStringLiteral("План пуст"), QStringLiteral("Сначала выполните предварительный анализ."));
+        return;
+    }
+
+    if (!currentSelectionStillMatchesPlan()) {
+        QMessageBox::warning(this,
+            QStringLiteral("Выбор изменён"),
+            QStringLiteral("После последнего анализа выбранные файлы/папки изменились. Выполните анализ заново, чтобы не передать старый план."));
+        clearCurrentPlan(QStringLiteral("План сброшен: выбор изменился после анализа"));
         return;
     }
 
@@ -567,8 +600,12 @@ void MainWindow::executeCurrentPlan() {
         .arg(result.errors)
         .arg(result.canceled ? QStringLiteral(", отменено пользователем") : QString()));
 
-    if (!m_journal.logOperation(m_currentDirection, m_currentPlan, result.copied, result.skipped, result.errors)) {
-        appendLog(QStringLiteral("Ошибка записи в SQLite-журнал: %1").arg(m_journal.lastError()));
+    if (result.errors == 0 && !result.canceled) {
+        if (!m_journal.logOperation(m_currentDirection, m_currentPlan, result.copied, result.skipped, result.errors)) {
+            appendLog(QStringLiteral("Ошибка записи в SQLite-журнал: %1").arg(m_journal.lastError()));
+        }
+    } else {
+        appendLog(QStringLiteral("Операция завершилась с ошибками или была отменена; запись в SQLite-журнал не выполнялась"));
     }
 
     refreshModels();
@@ -712,6 +749,13 @@ void MainWindow::applyFilterToModels() {
     if (m_localProxyModel) {
         m_localProxyModel->setFilterText(filterText);
         m_localProxyModel->setFilterMode(mode);
+        if (m_localModel && m_localView && m_localPathEdit) {
+            const QModelIndex sourceRoot = m_localModel->index(m_localPathEdit->text());
+            const QModelIndex proxyRoot = m_localProxyModel->mapFromSource(sourceRoot);
+            if (proxyRoot.isValid()) {
+                m_localView->setRootIndex(proxyRoot);
+            }
+        }
     }
 
     if (m_remoteModel) {
@@ -733,6 +777,45 @@ stl::FileFilterMode MainWindow::filterModeFromUi() const {
 void MainWindow::showHistory() {
     HistoryDialog dialog(m_journal, this);
     dialog.exec();
+}
+
+bool MainWindow::currentSelectionStillMatchesPlan() const {
+    const bool upload = m_currentDirection == stl::TransferDirection::Upload;
+    QStringList current = upload ? selectedLocalPaths() : selectedRemotePaths();
+    QStringList analyzed = m_analyzedSelectionPaths;
+
+    auto normalize = [](QStringList& values) {
+        for (QString& value : values) {
+            value = QFileInfo(value).absoluteFilePath();
+        }
+        values.sort(Qt::CaseInsensitive);
+        values.removeDuplicates();
+    };
+
+    normalize(current);
+    normalize(analyzed);
+    return current == analyzed;
+}
+
+void MainWindow::clearCurrentPlan(const QString& reason) {
+    m_currentPlan.clear();
+    m_analyzedSelectionPaths.clear();
+    m_transferQueue.clear();
+    if (m_planTable) {
+        m_planTable->setRowCount(0);
+    }
+    if (m_queueTable) {
+        m_queueTable->setRowCount(0);
+    }
+    if (m_totalProgressBar) {
+        m_totalProgressBar->setValue(0);
+    }
+    if (m_queueSummaryLabel) {
+        m_queueSummaryLabel->setText(QStringLiteral("Очередь не сформирована"));
+    }
+    if (!reason.isEmpty()) {
+        appendLog(reason);
+    }
 }
 
 void MainWindow::appendLog(const QString& message) {

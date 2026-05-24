@@ -67,6 +67,8 @@ private:
     void setTransferControlsRunning(bool running);
     QString formatBytes(qint64 bytes) const;
     void appendLog(const QString& message);
+    bool currentSelectionStillMatchesPlan() const;
+    void clearCurrentPlan(const QString& reason = QString());
     void setLocalRoot(const QString& path);
     void setRemoteEmulatorRoot(const QString& path);
     void refreshRemotePanel();
@@ -77,6 +79,7 @@ private:
     const stl::IStorageBackend& activeRemoteBackend() const;
     stl::IStorageBackend& activeRemoteBackend();
     QString activeRemoteDescription() const;
+    bool preserveSourceHierarchyFromUi() const;
 
     std::unique_ptr<Ui::MainWindow> ui;
 
@@ -94,6 +97,7 @@ private:
     QTableWidget* m_queueTable = nullptr;
     QTextEdit* m_log = nullptr;
     QCheckBox* m_backupCheckBox = nullptr;
+    QCheckBox* m_preserveSourceHierarchyCheckBox = nullptr;
     QProgressBar* m_totalProgressBar = nullptr;
     QLabel* m_queueSummaryLabel = nullptr;
     QPushButton* m_executeButton = nullptr;
@@ -110,6 +114,7 @@ private:
     stl::TransferManager m_transferManager;
     stl::Journal m_journal;
     QVector<stl::PreflightItem> m_currentPlan;
+    QStringList m_analyzedSelectionPaths;
     QVector<stl::QueueItem> m_transferQueue;
     stl::TransferDirection m_currentDirection = stl::TransferDirection::Upload;
     bool m_cancelRequested = false;

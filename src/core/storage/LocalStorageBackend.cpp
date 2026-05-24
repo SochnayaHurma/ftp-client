@@ -4,6 +4,7 @@
 #include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
+#include <QVector>
 
 namespace stl {
 
@@ -52,10 +53,12 @@ StorageObjectInfo LocalStorageBackend::objectInfo(const QString& absolutePath, b
     result.relativePath = relativePath(result.absolutePath);
     result.name = info.fileName();
 
+    // Файлы, выбранные вне текущего корня backend'а, тоже являются валидным
+    // источником операции: пользователь мог открыть справа целевую папку и
+    // выбрать слева произвольный файл. В таком случае переносим объект в
+    // целевую папку по его имени, а не блокируем анализ из-за "..".
     if (result.relativePath.startsWith(QStringLiteral(".."))) {
-        result.valid = false;
-        result.error = QStringLiteral("Объект находится вне корневого каталога backend'а");
-        return result;
+        result.relativePath = result.name.isEmpty() ? info.fileName() : result.name;
     }
 
     if (!result.exists) {
@@ -81,7 +84,16 @@ QVector<StorageObjectInfo> LocalStorageBackend::enumerate(const QString& absolut
                                                           bool recursive,
                                                           bool calculateHash) const {
     QVector<StorageObjectInfo> result;
-    const StorageObjectInfo rootInfo = objectInfo(absolutePath, calculateHash);
+    const QFileInfo selectedInfo(absolutePath);
+    StorageObjectInfo rootInfo = objectInfo(absolutePath, calculateHash);
+
+    const QString selectedRelativeToBackend = relativePath(rootInfo.absolutePath);
+    const bool selectedOutsideBackendRoot = selectedRelativeToBackend.startsWith(QStringLiteral(".."));
+
+    if (selectedOutsideBackendRoot) {
+        rootInfo.relativePath = selectedInfo.fileName();
+    }
+
     result.push_back(rootInfo);
 
     if (!rootInfo.valid || !rootInfo.exists || !rootInfo.isDirectory) {
@@ -96,9 +108,16 @@ QVector<StorageObjectInfo> LocalStorageBackend::enumerate(const QString& absolut
                           QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot,
                           flags);
 
+    const QDir selectedRootDir(selectedInfo.absoluteFilePath());
+
     while (iterator.hasNext()) {
         iterator.next();
-        result.push_back(objectInfo(iterator.fileInfo().absoluteFilePath(), calculateHash));
+        StorageObjectInfo childInfo = objectInfo(iterator.fileInfo().absoluteFilePath(), calculateHash);
+        if (selectedOutsideBackendRoot) {
+            const QString childRelative = selectedRootDir.relativeFilePath(childInfo.absolutePath);
+            childInfo.relativePath = rootInfo.relativePath + QStringLiteral("/") + childRelative;
+        }
+        result.push_back(childInfo);
     }
 
     return result;

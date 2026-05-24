@@ -6,7 +6,7 @@
 
 FileSystemFilterProxyModel::FileSystemFilterProxyModel(QObject* parent)
     : QSortFilterProxyModel(parent) {
-    setRecursiveFilteringEnabled(false);
+    setRecursiveFilteringEnabled(true);
     setDynamicSortFilter(true);
 }
 
@@ -47,8 +47,22 @@ bool FileSystemFilterProxyModel::filterAcceptsRow(int sourceRow, const QModelInd
     }
 
     const QFileInfo info = fsModel->fileInfo(sourceIndex);
+    if (acceptsFileInfo(info, true)) {
+        return true;
+    }
+
+    // Главное поведение поиска: если совпал вложенный файл, оставляем родительские
+    // папки видимыми. Иначе пользователь не сможет добраться до найденного имени.
+    if (!m_filterText.isEmpty() && info.isDir()) {
+        return childMatchesFilter(sourceIndex);
+    }
+
+    return false;
+}
+
+bool FileSystemFilterProxyModel::acceptsFileInfo(const QFileInfo& info, bool allowDirectoryNavigation) const {
     if (m_mode == stl::FileFilterMode::FilesOnly && info.isDir()) {
-        return false;
+        return allowDirectoryNavigation && !m_filterText.isEmpty() && nameMatches(info.fileName());
     }
     if (m_mode == stl::FileFilterMode::DirectoriesOnly && !info.isDir()) {
         return false;
@@ -57,12 +71,39 @@ bool FileSystemFilterProxyModel::filterAcceptsRow(int sourceRow, const QModelInd
     return nameMatches(info.fileName());
 }
 
+bool FileSystemFilterProxyModel::childMatchesFilter(const QModelIndex& sourceIndex) const {
+    const auto* fsModel = qobject_cast<QFileSystemModel*>(sourceModel());
+    if (!fsModel) {
+        return false;
+    }
+
+    const int rows = fsModel->rowCount(sourceIndex);
+    for (int row = 0; row < rows; ++row) {
+        const QModelIndex child = fsModel->index(row, 0, sourceIndex);
+        if (!child.isValid()) {
+            continue;
+        }
+        const QFileInfo childInfo = fsModel->fileInfo(child);
+        if (acceptsFileInfo(childInfo, false)) {
+            return true;
+        }
+        if (childInfo.isDir() && childMatchesFilter(child)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+QStringList FileSystemFilterProxyModel::filterParts() const {
+    return m_filterText.split(QRegularExpression(QStringLiteral("[;\\s]+")), Qt::SkipEmptyParts);
+}
+
 bool FileSystemFilterProxyModel::nameMatches(const QString& name) const {
     if (m_filterText.isEmpty()) {
         return true;
     }
 
-    const QStringList parts = m_filterText.split(QLatin1Char(';'), Qt::SkipEmptyParts);
+    const QStringList parts = filterParts();
     for (QString part : parts) {
         part = part.trimmed();
         if (part.isEmpty()) {
@@ -99,8 +140,8 @@ QVariant FileSystemFilterProxyModel::headerData(int section, Qt::Orientation ori
     return QSortFilterProxyModel::headerData(section, orientation, role);
 }
 
-QVariant FileSystemFilterProxyModel::data(const QModelIndex &index, int role) const {
-    if (role == Qt::DisplayRole && index.column() == 1) {
+QVariant FileSystemFilterProxyModel::data(const QModelIndex& index, int role) const {
+    if (role == Qt::DisplayRole && (index.column() == 1 || index.column() == 2)) {
         const auto* fsModel = qobject_cast<QFileSystemModel*>(sourceModel());
         if (!fsModel) {
             return QSortFilterProxyModel::data(index, role);
@@ -109,12 +150,22 @@ QVariant FileSystemFilterProxyModel::data(const QModelIndex &index, int role) co
         const QModelIndex sourceIndex = mapToSource(index);
         const QFileInfo info = fsModel->fileInfo(sourceIndex);
 
-        if (info.isDir()) {
-            return QString();
+        if (index.column() == 1) {
+            return info.isDir() ? QString() : ui::formatBytesRu(info.size());
         }
 
-        return ui::formatBytesRu(info.size());
+        return typeText(info);
     }
 
     return QSortFilterProxyModel::data(index, role);
+}
+
+QString FileSystemFilterProxyModel::typeText(const QFileInfo& info) const {
+    if (info.isRoot()) {
+        return tr("Диск");
+    }
+    if (info.isDir()) {
+        return tr("Папка");
+    }
+    return tr("Файл");
 }

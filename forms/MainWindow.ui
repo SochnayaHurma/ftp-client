@@ -177,6 +177,13 @@
        </spacer>
       </item>
       <item>
+       <widget class="QCheckBox" name="preserveSourceHierarchyCheckBox">
+        <property name="text">
+         <string>Перенос относительно панели-источника</string>
+        </property>
+       </widget>
+      </item>
+      <item>
        <widget class="QPushButton" name="analyzeUploadButton">
         <property name="text">
          <string>Анализ →</string>

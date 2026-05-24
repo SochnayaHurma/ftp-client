@@ -1,11 +1,10 @@
 #include "RemoteFileModel.h"
 #include "FormatUtils.h"
 
-#include <QApplication>
 #include <QDateTime>
+#include <QDir>
 #include <QFileInfo>
 #include <QRegularExpression>
-#include <QStyle>
 
 RemoteFileModel::RemoteFileModel(QObject* parent)
     : QStandardItemModel(parent) {
@@ -60,7 +59,7 @@ bool RemoteFileModel::reload(QString* error) {
 
     if (!m_backend) {
         if (error) {
-            *error = QStringLiteral("Backend удалённой панели не задан");
+            *error = QStringLiteral("Backend правой панели не задан");
         }
         return false;
     }
@@ -77,11 +76,13 @@ bool RemoteFileModel::reload(QString* error) {
     if (!root.valid || !root.exists || !root.isDirectory) {
         if (error) {
             *error = root.error.isEmpty()
-                ? QStringLiteral("Текущий удалённый путь не является доступным каталогом: %1").arg(m_currentPath)
+                ? QStringLiteral("Текущий путь правой панели не является доступным каталогом: %1").arg(m_currentPath)
                 : root.error;
         }
         return false;
     }
+
+    appendParentRow();
 
     for (int i = 1; i < objects.size(); ++i) {
         const stl::StorageObjectInfo& info = objects[i];
@@ -89,9 +90,7 @@ bool RemoteFileModel::reload(QString* error) {
             continue;
         }
 
-        auto* nameItem = new QStandardItem(info.name.isEmpty() ? QFileInfo(info.absolutePath).fileName() : info.name);
-        nameItem->setIcon(iconForObject(info));
-
+        auto* nameItem = new QStandardItem(displayNameForObject(info));
         auto* typeItem = new QStandardItem(info.isDirectory ? QStringLiteral("Папка") : QStringLiteral("Файл"));
         auto* sizeItem = new QStandardItem(formatSize(info));
         auto* modifiedItem = new QStandardItem(info.modified.isValid()
@@ -104,6 +103,7 @@ bool RemoteFileModel::reload(QString* error) {
             item->setData(info.absolutePath, AbsolutePathRole);
             item->setData(info.relativePath, RelativePathRole);
             item->setData(info.isDirectory, IsDirectoryRole);
+            item->setData(false, ParentDirectoryRole);
         }
         appendRow(row);
     }
@@ -132,6 +132,17 @@ bool RemoteFileModel::isDirectory(const QModelIndex& index) const {
     return item(index.row(), 0)->data(IsDirectoryRole).toBool();
 }
 
+bool RemoteFileModel::isNavigationUp(const QModelIndex& index) const {
+    return isParentDirectoryRow(index);
+}
+
+bool RemoteFileModel::isParentDirectoryRow(const QModelIndex& index) const {
+    if (!index.isValid()) {
+        return false;
+    }
+    return item(index.row(), 0)->data(ParentDirectoryRole).toBool();
+}
+
 QString RemoteFileModel::formatSize(const stl::StorageObjectInfo& info) const {
     if (info.isDirectory) {
         return QStringLiteral("-");
@@ -140,10 +151,63 @@ QString RemoteFileModel::formatSize(const stl::StorageObjectInfo& info) const {
     return ui::formatBytesRu(info.size);
 }
 
-QIcon RemoteFileModel::iconForObject(const stl::StorageObjectInfo& info) const {
-    return QApplication::style()->standardIcon(
-        info.isDirectory ? QStyle::SP_DirIcon : QStyle::SP_FileIcon
-    );
+QString RemoteFileModel::displayNameForObject(const stl::StorageObjectInfo& info) const {
+    const QString name = info.name.isEmpty() ? QFileInfo(info.absolutePath).fileName() : info.name;
+    return QStringLiteral("%1 %2").arg(info.isDirectory ? QStringLiteral("📁") : QStringLiteral("📄"), name);
+}
+
+QString RemoteFileModel::parentPath() const {
+    if (m_currentPath.isEmpty() || m_currentPath == QStringLiteral("/")) {
+        return QString();
+    }
+
+    if (m_backend && m_backend->isRemote()) {
+        QString clean = QDir::cleanPath(m_currentPath);
+        clean.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        if (clean == QStringLiteral(".") || clean == QStringLiteral("/")) {
+            return QString();
+        }
+        while (clean.endsWith(QLatin1Char('/')) && clean.size() > 1) {
+            clean.chop(1);
+        }
+        const int slash = clean.lastIndexOf(QLatin1Char('/'));
+        if (slash <= 0) {
+            return QStringLiteral("/");
+        }
+        return clean.left(slash);
+    }
+
+    const QString parent = QFileInfo(m_currentPath).absoluteDir().absolutePath();
+    if (parent == m_currentPath || parent.isEmpty()) {
+        return QString();
+    }
+    return parent;
+}
+
+bool RemoteFileModel::canShowParentRow() const {
+    return !parentPath().isEmpty();
+}
+
+void RemoteFileModel::appendParentRow() {
+    if (!canShowParentRow()) {
+        return;
+    }
+
+    auto* nameItem = new QStandardItem(QStringLiteral("📁 .."));
+    auto* typeItem = new QStandardItem(QStringLiteral("Назад"));
+    auto* sizeItem = new QStandardItem(QStringLiteral("-"));
+    auto* modifiedItem = new QStandardItem(QStringLiteral("-"));
+
+    const QList<QStandardItem*> row = { nameItem, typeItem, sizeItem, modifiedItem };
+    const QString parent = parentPath();
+    for (QStandardItem* item : row) {
+        item->setEditable(false);
+        item->setData(parent, AbsolutePathRole);
+        item->setData(parent, RelativePathRole);
+        item->setData(true, IsDirectoryRole);
+        item->setData(true, ParentDirectoryRole);
+    }
+    appendRow(row);
 }
 
 bool RemoteFileModel::acceptsObject(const stl::StorageObjectInfo& info) const {
@@ -158,12 +222,16 @@ bool RemoteFileModel::acceptsObject(const stl::StorageObjectInfo& info) const {
     return nameMatches(name);
 }
 
+QStringList RemoteFileModel::filterParts() const {
+    return m_filterText.split(QRegularExpression(QStringLiteral("[;\\s]+")), Qt::SkipEmptyParts);
+}
+
 bool RemoteFileModel::nameMatches(const QString& name) const {
     if (m_filterText.isEmpty()) {
         return true;
     }
 
-    const QStringList parts = m_filterText.split(QLatin1Char(';'), Qt::SkipEmptyParts);
+    const QStringList parts = filterParts();
     for (QString part : parts) {
         part = part.trimmed();
         if (part.isEmpty()) {
