@@ -59,7 +59,7 @@ bool RemoteFileModel::reload(QString* error) {
 
     if (!m_backend) {
         if (error) {
-            *error = QStringLiteral("Backend правой панели не задан");
+            *error = QStringLiteral("Сервер правой панели не задан");
         }
         return false;
     }
@@ -67,7 +67,7 @@ bool RemoteFileModel::reload(QString* error) {
     const QVector<stl::StorageObjectInfo> objects = m_backend->enumerate(m_currentPath, false, false);
     if (objects.isEmpty()) {
         if (error) {
-            *error = QStringLiteral("Backend не вернул объекты для каталога %1").arg(m_currentPath);
+            *error = QStringLiteral("Сервер не вернул объекты для каталога %1").arg(m_currentPath);
         }
         return false;
     }

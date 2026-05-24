@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QRegularExpression>
 #include <QTemporaryDir>
 #include <QUrl>
 
@@ -75,6 +76,103 @@ void configureCommonOptions(CURL* curl,
 QString errorFromBufferOrCode(const char* buffer, CURLcode code) {
     const QString detailed = QString::fromUtf8(buffer).trimmed();
     return detailed.isEmpty() ? curlCodeToText(code) : detailed;
+}
+
+struct DirectoryListEntry {
+    QString name;
+    bool isDirectory = false;
+    qint64 size = -1;
+    bool hasType = false;
+};
+
+DirectoryListEntry parseDirectoryListLine(QString line, bool dirListOnlyMode) {
+    DirectoryListEntry entry;
+    line = line.trimmed();
+
+    if (line.isEmpty() || line == QStringLiteral(".") || line == QStringLiteral("..")) {
+        return entry;
+    }
+
+    if (dirListOnlyMode) {
+        entry.name = line;
+        if (entry.name.endsWith(QLatin1Char('/'))) {
+            entry.name.chop(1);
+            entry.isDirectory = true;
+            entry.hasType = true;
+        }
+        return entry;
+    }
+
+    // UNIX LIST example:
+    // drwxr-xr-x  2 user group 4096 Jan 01 12:00 public_html
+    // -rw-r--r--  1 user group  123 Jan 01 12:00 index.html
+    static const QRegularExpression unixList(
+        QStringLiteral("^([dl-])[rwxstST-]{9}\\s+\\S+\\s+\\S+\\s+\\S+\\s+(\\d+)\\s+\\S+\\s+\\d+\\s+(?:[\\d:]+|\\d{4})\\s+(.+)$"));
+    QRegularExpressionMatch match = unixList.match(line);
+    if (match.hasMatch()) {
+        QString name = match.captured(3).trimmed();
+        const int symlinkPos = name.indexOf(QStringLiteral(" -> "));
+        if (symlinkPos >= 0) {
+            name = name.left(symlinkPos).trimmed();
+        }
+        entry.name = name;
+        entry.isDirectory = match.captured(1) == QStringLiteral("d");
+        entry.size = entry.isDirectory ? 0 : match.captured(2).toLongLong();
+        entry.hasType = true;
+        return entry;
+    }
+
+    // Windows/IIS LIST example:
+    // 01-01-24  12:00PM       <DIR>          public_html
+    // 01-01-24  12:00PM                 123 index.html
+    static const QRegularExpression windowsList(
+        QStringLiteral("^\\d{2}-\\d{2}-\\d{2}\\s+\\d{2}:\\d{2}[AP]M\\s+(<DIR>|\\d+)\\s+(.+)$"),
+        QRegularExpression::CaseInsensitiveOption);
+    match = windowsList.match(line);
+    if (match.hasMatch()) {
+        const QString sizeOrDir = match.captured(1);
+        entry.name = match.captured(2).trimmed();
+        entry.isDirectory = sizeOrDir.compare(QStringLiteral("<DIR>"), Qt::CaseInsensitive) == 0;
+        entry.size = entry.isDirectory ? 0 : sizeOrDir.toLongLong();
+        entry.hasType = true;
+        return entry;
+    }
+
+    // Fallback: some servers ignore LIST format expectations and return plain names.
+    entry.name = line;
+    return entry;
+}
+
+bool performDirectoryList(const RemoteConnectionProfile& profile,
+                          const QString& url,
+                          bool dirListOnlyMode,
+                          QByteArray* listing,
+                          QString* error) {
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        if (error) {
+            *error = QStringLiteral("Не удалось инициализировать libcurl");
+        }
+        return false;
+    }
+
+    char errorBuffer[CURL_ERROR_SIZE] = {0};
+    configureCommonOptions(curl, profile, url, errorBuffer);
+    curl_easy_setopt(curl, CURLOPT_DIRLISTONLY, dirListOnlyMode ? 1L : 0L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToByteArray);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, listing);
+
+    const CURLcode code = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    if (code == CURLE_OK) {
+        return true;
+    }
+
+    if (error) {
+        *error = errorFromBufferOrCode(errorBuffer, code);
+    }
+    return false;
 }
 
 #endif
@@ -321,57 +419,103 @@ QVector<StorageObjectInfo> CurlRemoteStorage::enumerate(const QString& absoluteP
     result.push_back(unavailableInfo(remotePath, QStringLiteral("CurlRemoteStorage недоступен: проект собран без libcurl")));
     return result;
 #else
-    StorageObjectInfo rootInfo = objectInfo(remotePath, false);
+    StorageObjectInfo rootInfo;
+    rootInfo.valid = true;
+    rootInfo.exists = true;
+    rootInfo.isDirectory = true;
+    rootInfo.absolutePath = remotePath;
+    rootInfo.relativePath = relativePath(remotePath);
+    rootInfo.name = QFileInfo(remotePath).fileName();
+    if (rootInfo.name.isEmpty()) {
+        rootInfo.name = QStringLiteral("/");
+    }
+    rootInfo.size = 0;
     result.push_back(rootInfo);
 
-    if (!rootInfo.valid || !rootInfo.exists || !rootInfo.isDirectory) {
-        if (calculateHash && rootInfo.valid && rootInfo.exists && !rootInfo.isDirectory) {
-            result[0] = objectInfo(remotePath, true);
-        }
+    QString validationError;
+    if (!m_profile.isValid(&validationError)) {
+        result[0].valid = false;
+        result[0].exists = false;
+        result[0].error = validationError;
         return result;
     }
 
+    if (!ensureCurlGlobalInit()) {
+        result[0].valid = false;
+        result[0].exists = false;
+        result[0].error = QStringLiteral("Не удалось выполнить глобальную инициализацию libcurl");
+        return result;
+    }
+
+    // Важно: для реальных FTP серверов нельзя сначала доверять objectInfo()/NOBODY
+    // при проверке каталога. Некоторые серверы успешно принимают upload, но неверно
+    // отвечают на SIZE/HEAD для папки. Поэтому для текущей директории сразу пробуем LIST.
     QByteArray listing;
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-        result[0].valid = false;
-        result[0].error = QStringLiteral("Не удалось инициализировать libcurl");
-        return result;
-    }
+    QString listError;
+    bool dirListOnlyMode = false;
+    bool listed = performDirectoryList(m_profile, makeUrl(remotePath, true), false, &listing, &listError);
 
-    char errorBuffer[CURL_ERROR_SIZE] = {0};
-    configureCommonOptions(curl, m_profile, makeUrl(remotePath, true), errorBuffer);
-    curl_easy_setopt(curl, CURLOPT_DIRLISTONLY, 1L);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToByteArray);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &listing);
-
-    const CURLcode code = curl_easy_perform(curl);
-    if (code != CURLE_OK) {
-        result[0].valid = false;
-        result[0].error = errorFromBufferOrCode(errorBuffer, code);
-        curl_easy_cleanup(curl);
-        return result;
+    // Если обычный LIST не поддержан, пробуем NLST/DIRLISTONLY. Типы объектов в этом
+    // режиме могут быть неизвестны, но хотя бы имена будут видны пользователю.
+    if (!listed) {
+        listing.clear();
+        QString nlstError;
+        listed = performDirectoryList(m_profile, makeUrl(remotePath, true), true, &listing, &nlstError);
+        dirListOnlyMode = listed;
+        if (!listed) {
+            result[0].valid = false;
+            result[0].exists = false;
+            result[0].error = QStringLiteral("Не удалось получить список удалённого каталога %1: %2")
+                .arg(remotePath, listError.isEmpty() ? nlstError : listError);
+            return result;
+        }
     }
-    curl_easy_cleanup(curl);
 
     const QList<QByteArray> lines = listing.split('\n');
-    for (QByteArray rawName : lines) {
-        QString name = QString::fromUtf8(rawName).trimmed();
-        if (name.isEmpty() || name == QStringLiteral(".") || name == QStringLiteral("..")) {
+    for (const QByteArray& rawLine : lines) {
+        DirectoryListEntry parsed = parseDirectoryListLine(QString::fromUtf8(rawLine), dirListOnlyMode);
+        if (parsed.name.isEmpty() || parsed.name == QStringLiteral(".") || parsed.name == QStringLiteral("..")) {
             continue;
         }
 
-        const bool listingMarkedDirectory = name.endsWith(QLatin1Char('/'));
-        if (listingMarkedDirectory) {
-            name.chop(1);
+        const QString childPath = normalizeRemotePath(remotePath + QLatin1Char('/') + parsed.name);
+        StorageObjectInfo child;
+        if (parsed.hasType && parsed.isDirectory) {
+            child.valid = true;
+            child.exists = true;
+            child.isDirectory = true;
+            child.absolutePath = childPath;
+            child.relativePath = relativePath(childPath);
+            child.name = parsed.name;
+            child.size = 0;
+        } else if (parsed.hasType && !parsed.isDirectory) {
+            child = objectInfo(childPath, calculateHash);
+            if (!child.valid || !child.exists) {
+                child.valid = true;
+                child.exists = true;
+                child.isDirectory = false;
+                child.absolutePath = childPath;
+                child.relativePath = relativePath(childPath);
+                child.name = parsed.name;
+                child.size = parsed.size < 0 ? 0 : parsed.size;
+            }
+        } else {
+            child = objectInfo(childPath, calculateHash);
+            if (!child.valid || !child.exists) {
+                // Fallback для NLST: сервер отдал имя, значит объект существует, но тип
+                // мог быть недоступен. Показываем как файл, чтобы пользователь хотя бы видел listing.
+                child.valid = true;
+                child.exists = true;
+                child.isDirectory = false;
+                child.absolutePath = childPath;
+                child.relativePath = relativePath(childPath);
+                child.name = parsed.name;
+                child.size = 0;
+            }
         }
 
-        const QString childPath = normalizeRemotePath(remotePath + QLatin1Char('/') + name);
-        StorageObjectInfo child = objectInfo(childPath, calculateHash && !listingMarkedDirectory);
-        if (listingMarkedDirectory) {
-            child.exists = true;
-            child.valid = true;
-            child.isDirectory = true;
+        if (child.name.isEmpty()) {
+            child.name = parsed.name;
         }
         result.push_back(child);
 

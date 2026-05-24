@@ -2,24 +2,28 @@
 #include "storage/LocalStorageBackend.h"
 
 #include <QtGlobal>
+#include <QDir>
+#include <QFileInfo>
 
 namespace stl {
 
 QVector<PreflightItem> PreflightAnalyzer::analyze(const QStringList& selectedPaths,
                                                   const QString& sourceRoot,
-                                                  const QString& destinationRoot) const {
+                                                  const QString& destinationRoot,
+                                                  bool preserveSourceHierarchy) const {
     LocalStorageBackend sourceBackend(sourceRoot);
     LocalStorageBackend destinationBackend(destinationRoot);
-    return analyze(selectedPaths, sourceBackend, destinationBackend);
+    return analyze(selectedPaths, sourceBackend, destinationBackend, preserveSourceHierarchy);
 }
 
 QVector<PreflightItem> PreflightAnalyzer::analyze(const QStringList& selectedPaths,
                                                   const IStorageBackend& sourceBackend,
-                                                  const IStorageBackend& destinationBackend) const {
+                                                  const IStorageBackend& destinationBackend,
+                                                  bool preserveSourceHierarchy) const {
     QVector<PreflightItem> result;
 
     for (const QString& path : selectedPaths) {
-        analyzePath(path, sourceBackend, destinationBackend, result);
+        analyzePath(path, sourceBackend, destinationBackend, preserveSourceHierarchy, result);
     }
 
     return result;
@@ -28,8 +32,13 @@ QVector<PreflightItem> PreflightAnalyzer::analyze(const QStringList& selectedPat
 void PreflightAnalyzer::analyzePath(const QString& sourcePath,
                                     const IStorageBackend& sourceBackend,
                                     const IStorageBackend& destinationBackend,
+                                    bool preserveSourceHierarchy,
                                     QVector<PreflightItem>& result) const {
-    const QVector<StorageObjectInfo> objects = sourceBackend.enumerate(sourcePath, true, true);
+    QVector<StorageObjectInfo> objects = sourceBackend.enumerate(sourcePath, true, true);
+
+    if (!preserveSourceHierarchy) {
+        objects = rebaseSelectedObjects(sourcePath, objects);
+    }
 
     if (objects.isEmpty()) {
         PreflightItem item;
@@ -68,6 +77,56 @@ void PreflightAnalyzer::analyzePath(const QString& sourcePath,
 
         result.push_back(makeItem(object, destinationBackend));
     }
+}
+
+
+QVector<StorageObjectInfo> PreflightAnalyzer::rebaseSelectedObjects(
+    const QString& sourcePath,
+    const QVector<StorageObjectInfo>& objects
+    ) const {
+    if (objects.isEmpty()) {
+        return objects;
+    }
+
+    QVector<StorageObjectInfo> rebased = objects;
+
+    const StorageObjectInfo& selectedObject = objects.first();
+
+    const QString selectedAbsolutePath = selectedObject.absolutePath.isEmpty()
+                                             ? QFileInfo(sourcePath).absoluteFilePath()
+                                             : selectedObject.absolutePath;
+
+    const QString selectedName = !selectedObject.name.isEmpty()
+                                     ? selectedObject.name
+                                     : QFileInfo(selectedAbsolutePath).fileName();
+
+    if (selectedName.isEmpty()) {
+        return rebased;
+    }
+
+    if (!selectedObject.isDirectory) {
+        rebased[0].relativePath = selectedName;
+        return rebased;
+    }
+
+    const QDir selectedDir(selectedAbsolutePath);
+
+    for (StorageObjectInfo& object : rebased) {
+        if (object.absolutePath == selectedAbsolutePath) {
+            object.relativePath = selectedName;
+            continue;
+        }
+
+        QString childRelative = selectedDir.relativeFilePath(object.absolutePath);
+
+        if (childRelative.startsWith(QStringLiteral(".."))) {
+            childRelative = QFileInfo(object.absolutePath).fileName();
+        }
+
+        object.relativePath = selectedName + QStringLiteral("/") + childRelative;
+    }
+
+    return rebased;
 }
 
 PreflightItem PreflightAnalyzer::makeItem(const StorageObjectInfo& sourceInfo,

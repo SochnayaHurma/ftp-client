@@ -78,6 +78,13 @@ void MainWindow::buildUi() {
     m_cancelButton = ui->cancelButton;
     m_preserveSourceHierarchyCheckBox = ui->preserveSourceHierarchyCheckBox;
 
+    if (m_preserveSourceHierarchyCheckBox) {
+        m_preserveSourceHierarchyCheckBox->setToolTip(
+            QStringLiteral("Если включено, в назначении сохраняется путь выбранного объекта относительно панели-источника. "
+                           "Если выключено, выбранные файлы и папки кладутся прямо в текущую папку назначения.")
+            );
+    }
+
     auto* chooseLocalButton = ui->chooseLocalButton;
     auto* chooseRemoteButton = ui->chooseRemoteButton;
     auto* remoteUpButton = ui->remoteUpButton;
@@ -359,7 +366,7 @@ void MainWindow::configureRemoteConnection() {
     m_useCurlRemoteBackend = true;
     m_remotePathEdit->setText(m_remoteProfile.remoteRoot.isEmpty() ? QStringLiteral("/") : m_remoteProfile.remoteRoot);
     refreshRemotePanel();
-    appendLog(QStringLiteral("Включён CurlRemoteStorage: %1").arg(m_remoteProfile.safeDescription()));
+    appendLog(QStringLiteral("Подключен сервер: %1").arg(m_remoteProfile.safeDescription()));
 }
 
 void MainWindow::remoteGoUp() {
@@ -457,13 +464,23 @@ void MainWindow::analyze(stl::TransferDirection direction) {
     const stl::IStorageBackend& destinationBackend = upload ? activeRemoteBackend()
                                                             : static_cast<const stl::IStorageBackend&>(m_localBackend);
 
-    m_currentPlan = m_analyzer.analyze(selected, sourceBackend, destinationBackend);
+    m_currentPlan = m_analyzer.analyze(
+        selected,
+        sourceBackend,
+        destinationBackend,
+        preserveSourceHierarchyFromUi()
+    );
     m_analyzedSelectionPaths = selected;
     displayPlan(m_currentPlan);
     displayQueue(m_currentPlan);
     appendLog(QStringLiteral("Сформирован план через backend-слой: %1, объектов: %2")
         .arg(stl::directionToText(direction))
         .arg(m_currentPlan.size()));
+}
+
+bool MainWindow::preserveSourceHierarchyFromUi() const {
+    return m_preserveSourceHierarchyCheckBox
+           && m_preserveSourceHierarchyCheckBox->isChecked();
 }
 
 void MainWindow::displayPlan(const QVector<stl::PreflightItem>& plan) {
