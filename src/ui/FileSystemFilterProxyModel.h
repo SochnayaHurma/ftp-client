@@ -19,7 +19,6 @@ public:
     stl::FileFilterMode filterMode() const;
     QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
     QVariant data(const QModelIndex &index, int role) const override;
-    QString formatSize(qint64 bytes) const;
 
 protected:
     bool filterAcceptsRow(int sourceRow, const QModelIndex& sourceParent) const override;

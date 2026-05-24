@@ -3,6 +3,7 @@
 #include "../core/storage/IStorageBackend.h"
 #include "FileFilterMode.h"
 
+#include <QIcon>
 #include <QStandardItemModel>
 #include <QString>
 
@@ -37,6 +38,7 @@ public:
 
 private:
     QString formatSize(const stl::StorageObjectInfo& info) const;
+    QIcon iconForObject(const stl::StorageObjectInfo& info) const;
     bool acceptsObject(const stl::StorageObjectInfo& info) const;
     bool nameMatches(const QString& name) const;
     bool wildcardMatches(const QString& name, const QString& pattern) const;

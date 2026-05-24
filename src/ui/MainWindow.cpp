@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "FormatUtils.h"
 #include "HistoryDialog.h"
 #include "RemoteConnectionDialog.h"
 #include "ui_MainWindow.h"
@@ -57,7 +58,7 @@ MainWindow::~MainWindow() = default;
 void MainWindow::buildUi() {
     ui = std::make_unique<Ui::MainWindow>();
     ui->setupUi(this);
-    setWindowTitle(QStringLiteral("SecureTransfer"));
+    setWindowTitle(QStringLiteral("SecureTransfer — локальный проводник и FTP/SFTP клиент"));
     resize(1320, 880);
 
     m_localPathEdit = ui->localPathEdit;
@@ -101,15 +102,44 @@ void MainWindow::buildUi() {
         QStringLiteral("Статус"),
         QStringLiteral("Риск"),
         QStringLiteral("Объект"),
-        QStringLiteral("Размер источника"),
-        QStringLiteral("Размер назначения"),
-        QStringLiteral("SHA-256 источника"),
-        QStringLiteral("SHA-256 назначения"),
+        QStringLiteral("Размер ист."),
+        QStringLiteral("Размер назн."),
+        QStringLiteral("SHA ист."),
+        QStringLiteral("SHA назн."),
         QStringLiteral("Назначение"),
         QStringLiteral("Предупреждение")
     });
+
+    const QStringList planHeaderTooltips = {
+        QStringLiteral("Статус операции"),
+        QStringLiteral("Уровень риска"),
+        QStringLiteral("Относительный путь объекта"),
+        QStringLiteral("Размер файла-источника"),
+        QStringLiteral("Размер файла назначения"),
+        QStringLiteral("SHA-256 файла-источника"),
+        QStringLiteral("SHA-256 файла назначения"),
+        QStringLiteral("Полный путь назначения"),
+        QStringLiteral("Предупреждение пользователю")
+    };
+    for (int i = 0; i < planHeaderTooltips.size(); ++i) {
+        if (auto* headerItem = m_planTable->horizontalHeaderItem(i)) {
+            headerItem->setToolTip(planHeaderTooltips[i]);
+        }
+    }
+
+    m_planTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     m_planTable->horizontalHeader()->setStretchLastSection(true);
-    m_planTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_planTable->horizontalHeader()->setMinimumSectionSize(70);
+    m_planTable->verticalHeader()->setVisible(false);
+    m_planTable->setWordWrap(false);
+    m_planTable->setColumnWidth(0, 105);
+    m_planTable->setColumnWidth(1, 80);
+    m_planTable->setColumnWidth(2, 260);
+    m_planTable->setColumnWidth(3, 95);
+    m_planTable->setColumnWidth(4, 95);
+    m_planTable->setColumnWidth(5, 120);
+    m_planTable->setColumnWidth(6, 120);
+    m_planTable->setColumnWidth(7, 260);
     m_planTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_planTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
 
@@ -215,7 +245,7 @@ QString MainWindow::activeRemoteDescription() const {
     if (m_useCurlRemoteBackend && m_curlRemoteBackend) {
         return QStringLiteral("активный FTP/SFTP backend: %1").arg(m_remoteProfile.safeDescription());
     }
-    return QStringLiteral("активный backend: локальный сервер-эмулятор");
+    return QStringLiteral("режим: локальный двухпанельный проводник");
 }
 
 void MainWindow::refreshRemotePanel() {
@@ -249,17 +279,17 @@ void MainWindow::chooseLocalRoot() {
 }
 
 void MainWindow::chooseRemoteRoot() {
-    const QString path = QFileDialog::getExistingDirectory(this, QStringLiteral("Выберите серверный каталог-эмулятор"), m_remotePathEdit->text());
+    const QString path = QFileDialog::getExistingDirectory(this, QStringLiteral("Выберите правую папку локального проводника"), m_remotePathEdit->text());
     if (!path.isEmpty()) {
         setRemoteEmulatorRoot(path);
-        appendLog(QStringLiteral("Правая панель переключена на локальный сервер-эмулятор: %1").arg(path));
+        appendLog(QStringLiteral("Правая панель переключена в режим локального проводника: %1").arg(path));
     }
 }
 
 void MainWindow::switchToEmulator() {
     const QString root = m_remoteEmulatorBackend.root().isEmpty() ? defaultRemoteRoot() : m_remoteEmulatorBackend.root();
     setRemoteEmulatorRoot(root);
-    appendLog(QStringLiteral("Включён сервер-эмулятор: %1").arg(root));
+    appendLog(QStringLiteral("Включён локальный двухпанельный проводник: %1").arg(root));
 }
 
 void MainWindow::configureRemoteConnection() {
@@ -290,10 +320,10 @@ void MainWindow::configureRemoteConnection() {
     if (!stl::CurlRemoteStorage::isBuiltWithCurl()) {
         QMessageBox::information(this,
             QStringLiteral("libcurl не подключён"),
-            QStringLiteral("Профиль сохранён, но проект собран без libcurl. Для настоящего FTP/SFTP backend пересоберите проект с параметром -DSECURETRANSFER_WITH_CURL=ON."));
-        m_remoteBackendLabel->setText(QStringLiteral("FTP/SFTP профиль подготовлен: %1. Активен сервер-эмулятор, так как libcurl не подключён.")
+            QStringLiteral("Профиль сохранён, но проект собран без libcurl. Для настоящего FTP/SFTP backend пересоберите проект с параметром -DSECURETRANSFER_WITH_CURL=ON. Сейчас активен локальный двухпанельный проводник."));
+        m_remoteBackendLabel->setText(QStringLiteral("FTP/SFTP профиль подготовлен: %1. Активен локальный проводник, так как libcurl не подключён.")
             .arg(m_remoteProfile.safeDescription()));
-        appendLog(QStringLiteral("Профиль удалённого подключения подготовлен, но libcurl не подключён: %1").arg(m_remoteProfile.safeDescription()));
+        appendLog(QStringLiteral("Профиль удалённого подключения подготовлен, но libcurl не подключён. Продолжается работа локального проводника: %1").arg(m_remoteProfile.safeDescription()));
         return;
     }
 
@@ -652,22 +682,7 @@ void MainWindow::cancelTransferQueue() {
 }
 
 QString MainWindow::formatBytes(qint64 bytes) const {
-    if (bytes < 0) {
-        return QStringLiteral("-");
-    }
-
-    static const char* units[] = {"Б", "КБ", "МБ", "ГБ", "ТБ"};
-    double value = static_cast<double>(bytes);
-    int unitIndex = 0;
-    while (value >= 1024.0 && unitIndex < 4) {
-        value /= 1024.0;
-        ++unitIndex;
-    }
-
-    if (unitIndex == 0) {
-        return QStringLiteral("%1 %2").arg(bytes).arg(QString::fromUtf8(units[unitIndex]));
-    }
-    return QStringLiteral("%1 %2").arg(value, 0, 'f', 2).arg(QString::fromUtf8(units[unitIndex]));
+    return ui::formatBytesRu(bytes);
 }
 
 void MainWindow::refreshModels() {

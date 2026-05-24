@@ -1,4 +1,5 @@
 #include "FileSystemFilterProxyModel.h"
+#include "FormatUtils.h"
 
 #include <QFileInfo>
 #include <QRegularExpression>
@@ -99,25 +100,21 @@ QVariant FileSystemFilterProxyModel::headerData(int section, Qt::Orientation ori
 }
 
 QVariant FileSystemFilterProxyModel::data(const QModelIndex &index, int role) const {
-
     if (role == Qt::DisplayRole && index.column() == 1) {
+        const auto* fsModel = qobject_cast<QFileSystemModel*>(sourceModel());
+        if (!fsModel) {
+            return QSortFilterProxyModel::data(index, role);
+        }
 
-        QModelIndex sourceIndex = mapToSource(index);
-        qint64 bytes = sourceModel()->data(sourceIndex, QFileSystemModel::SizeRole).toLongLong();
+        const QModelIndex sourceIndex = mapToSource(index);
+        const QFileInfo info = fsModel->fileInfo(sourceIndex);
 
-        if (sourceModel()->fileInfo(sourceIndex).isDir()) {
+        if (info.isDir()) {
             return QString();
         }
 
-        return formatSize(bytes);
+        return ui::formatBytesRu(info.size());
     }
 
     return QSortFilterProxyModel::data(index, role);
-}
-
-QString FileSystemFilterProxyModel::formatSize(qint64 bytes) const {
-    if (bytes < 1024) return tr("%1 байт").arg(bytes);
-    if (bytes < 1024 * 1024) return tr("%1 КБ").arg(bytes / 1024);
-    if (bytes < 1024 * 1024 * 1024) return tr("%1 МБ").arg(bytes / (1024 * 1024));
-    return tr("%1 ГБ").arg(bytes / (1024 * 1024 * 1024));
 }

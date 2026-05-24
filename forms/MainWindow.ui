@@ -53,7 +53,7 @@
       <item>
        <widget class="QLabel" name="remoteLabel">
         <property name="text">
-         <string>Удалённая сторона:</string>
+         <string>Правая панель:</string>
         </property>
        </widget>
       </item>
@@ -70,7 +70,7 @@
       <item>
        <widget class="QPushButton" name="chooseRemoteButton">
         <property name="text">
-         <string>Сервер-эмулятор...</string>
+         <string>Правая папка...</string>
         </property>
        </widget>
       </item>
@@ -84,7 +84,7 @@
       <item>
        <widget class="QPushButton" name="emulatorButton">
         <property name="text">
-         <string>Вернуться к эмулятору</string>
+         <string>Локальный проводник</string>
         </property>
        </widget>
       </item>

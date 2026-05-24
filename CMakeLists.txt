@@ -21,6 +21,8 @@ set(SECURETRANSFER_APP_SOURCES
     forms/HistoryDialog.ui
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
+    src/ui/FormatUtils.h
+    src/ui/FormatUtils.cpp
     src/ui/FileFilterMode.h
     src/ui/FileSystemFilterProxyModel.h
     src/ui/FileSystemFilterProxyModel.cpp

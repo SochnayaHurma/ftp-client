@@ -1,0 +1,395 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -22,6 +22,8 @@ set(SECURETRANSFER_APP_SOURCES
+     forms/HistoryDialog.ui
+     src/ui/MainWindow.h
+     src/ui/MainWindow.cpp
++    src/ui/FormatUtils.h
++    src/ui/FormatUtils.cpp
+     src/ui/FileFilterMode.h
+     src/ui/FileSystemFilterProxyModel.h
+     src/ui/FileSystemFilterProxyModel.cpp
+diff --git a/src/ui/FormatUtils.h b/src/ui/FormatUtils.h
+new file mode 100644
+--- /dev/null
++++ b/src/ui/FormatUtils.h
+@@ -0,0 +1,10 @@
++#pragma once
++
++#include <QtGlobal>
++#include <QString>
++
++namespace ui {
++
++QString formatBytesRu(qint64 bytes);
++
++}
+diff --git a/src/ui/FormatUtils.cpp b/src/ui/FormatUtils.cpp
+new file mode 100644
+--- /dev/null
++++ b/src/ui/FormatUtils.cpp
+@@ -0,0 +1,54 @@
++#include "FormatUtils.h"
++
++#include <QLocale>
++
++namespace ui {
++
++QString formatBytesRu(qint64 bytes) {
++    if (bytes < 0) {
++        return QStringLiteral("-");
++    }
++
++    if (bytes == 0) {
++        return QStringLiteral("0 байт");
++    }
++
++    if (bytes < 1024) {
++        return QStringLiteral("%1 байт").arg(bytes);
++    }
++
++    struct Unit {
++        double factor;
++        const char* suffix;
++    };
++
++    static const Unit units[] = {
++        {1024.0, "КБ"},
++        {1024.0 * 1024.0, "МБ"},
++        {1024.0 * 1024.0 * 1024.0, "ГБ"},
++        {1024.0 * 1024.0 * 1024.0 * 1024.0, "ТБ"}
++    };
++
++    double value = static_cast<double>(bytes);
++    QString suffix = QStringLiteral("Б");
++
++    for (const Unit& unit : units) {
++        value = static_cast<double>(bytes) / unit.factor;
++        suffix = QString::fromUtf8(unit.suffix);
++        if (value < 1024.0 || suffix == QStringLiteral("ТБ")) {
++            break;
++        }
++    }
++
++    const int decimals = value < 10.0 ? 1 : 0;
++    const QLocale locale(QLocale::Russian, QLocale::Russia);
++
++    return QStringLiteral("%1 %2")
++        .arg(locale.toString(value, 'f', decimals))
++        .arg(suffix);
++}
++
++}
+diff --git a/src/ui/FileSystemFilterProxyModel.h b/src/ui/FileSystemFilterProxyModel.h
+--- a/src/ui/FileSystemFilterProxyModel.h
++++ b/src/ui/FileSystemFilterProxyModel.h
+@@ -22,7 +22,6 @@ public:
+     QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
+     QVariant data(const QModelIndex &index, int role) const override;
+-    QString formatSize(qint64 bytes) const;
+ 
+ protected:
+     bool filterAcceptsRow(int sourceRow, const QModelIndex& sourceParent) const override;
+diff --git a/src/ui/FileSystemFilterProxyModel.cpp b/src/ui/FileSystemFilterProxyModel.cpp
+--- a/src/ui/FileSystemFilterProxyModel.cpp
++++ b/src/ui/FileSystemFilterProxyModel.cpp
+@@ -1,4 +1,5 @@
+ #include "FileSystemFilterProxyModel.h"
++#include "FormatUtils.h"
+ 
+ #include <QFileInfo>
+ #include <QRegularExpression>
+@@ -93,26 +94,23 @@ QVariant FileSystemFilterProxyModel::headerData(int section, Qt::Orientation ori
+ }
+ 
+ QVariant FileSystemFilterProxyModel::data(const QModelIndex &index, int role) const {
+-
+     if (role == Qt::DisplayRole && index.column() == 1) {
++        const auto* fsModel = qobject_cast<QFileSystemModel*>(sourceModel());
++        if (!fsModel) {
++            return QSortFilterProxyModel::data(index, role);
++        }
+ 
+-        QModelIndex sourceIndex = mapToSource(index);
+-        qint64 bytes = sourceModel()->data(sourceIndex, QFileSystemModel::SizeRole).toLongLong();
++        const QModelIndex sourceIndex = mapToSource(index);
++        const QFileInfo info = fsModel->fileInfo(sourceIndex);
+ 
+-        if (sourceModel()->fileInfo(sourceIndex).isDir()) {
++        if (info.isDir()) {
+             return QString();
+         }
+ 
+-        return formatSize(bytes);
++        return ui::formatBytesRu(info.size());
+     }
+ 
+     return QSortFilterProxyModel::data(index, role);
+ }
+-
+-QString FileSystemFilterProxyModel::formatSize(qint64 bytes) const {
+-    if (bytes < 1024) return tr("%1 байт").arg(bytes);
+-    if (bytes < 1024 * 1024) return tr("%1 КБ").arg(bytes / 1024);
+-    if (bytes < 1024 * 1024 * 1024) return tr("%1 МБ").arg(bytes / (1024 * 1024));
+-    return tr("%1 ГБ").arg(bytes / (1024 * 1024 * 1024));
+-}
+diff --git a/src/ui/RemoteFileModel.h b/src/ui/RemoteFileModel.h
+--- a/src/ui/RemoteFileModel.h
++++ b/src/ui/RemoteFileModel.h
+@@ -4,6 +4,7 @@
+ #include "FileFilterMode.h"
+ 
++#include <QIcon>
+ #include <QStandardItemModel>
+ #include <QString>
+@@ -34,6 +35,7 @@ private:
+     QString formatSize(const stl::StorageObjectInfo& info) const;
++    QIcon iconForObject(const stl::StorageObjectInfo& info) const;
+     bool acceptsObject(const stl::StorageObjectInfo& info) const;
+     bool nameMatches(const QString& name) const;
+     bool wildcardMatches(const QString& name, const QString& pattern) const;
+diff --git a/src/ui/RemoteFileModel.cpp b/src/ui/RemoteFileModel.cpp
+--- a/src/ui/RemoteFileModel.cpp
++++ b/src/ui/RemoteFileModel.cpp
+@@ -1,8 +1,11 @@
+ #include "RemoteFileModel.h"
++#include "FormatUtils.h"
+ 
++#include <QApplication>
+ #include <QDateTime>
+ #include <QFileInfo>
+ #include <QRegularExpression>
++#include <QStyle>
+ 
+ RemoteFileModel::RemoteFileModel(QObject* parent)
+@@ -80,6 +83,8 @@ bool RemoteFileModel::reload(QString* error) {
+         }
+ 
+         auto* nameItem = new QStandardItem(info.name.isEmpty() ? QFileInfo(info.absolutePath).fileName() : info.name);
++        nameItem->setIcon(iconForObject(info));
++
+         auto* typeItem = new QStandardItem(info.isDirectory ? QStringLiteral("Папка") : QStringLiteral("Файл"));
+         auto* sizeItem = new QStandardItem(formatSize(info));
+@@ -131,22 +136,14 @@ QString RemoteFileModel::formatSize(const stl::StorageObjectInfo& info) const {
+         return QStringLiteral("-");
+     }
+ 
+-    if (info.size < 1024) {
+-        return QStringLiteral("%1 Б").arg(info.size);
+-    }
+-
+-    const double kb = static_cast<double>(info.size) / 1024.0;
+-    if (kb < 1024.0) {
+-        return QStringLiteral("%1 КБ").arg(kb, 0, 'f', 1);
+-    }
+-
+-    const double mb = kb / 1024.0;
+-    return QStringLiteral("%1 МБ").arg(mb, 0, 'f', 1);
++    return ui::formatBytesRu(info.size);
++}
++
++QIcon RemoteFileModel::iconForObject(const stl::StorageObjectInfo& info) const {
++    return QApplication::style()->standardIcon(
++        info.isDirectory ? QStyle::SP_DirIcon : QStyle::SP_FileIcon
++    );
+ }
+ 
+ bool RemoteFileModel::acceptsObject(const stl::StorageObjectInfo& info) const {
+diff --git a/src/ui/MainWindow.cpp b/src/ui/MainWindow.cpp
+--- a/src/ui/MainWindow.cpp
++++ b/src/ui/MainWindow.cpp
+@@ -1,5 +1,6 @@
+ #include "MainWindow.h"
++#include "FormatUtils.h"
+ #include "HistoryDialog.h"
+ #include "RemoteConnectionDialog.h"
+@@ -54,7 +55,7 @@ MainWindow::~MainWindow() = default;
+ void MainWindow::buildUi() {
+     ui = std::make_unique<Ui::MainWindow>();
+     ui->setupUi(this);
+-    setWindowTitle(QStringLiteral("SecureTransfer"));
++    setWindowTitle(QStringLiteral("SecureTransfer — локальный проводник и FTP/SFTP клиент"));
+     resize(1320, 880);
+@@ -101,17 +102,31 @@ void MainWindow::buildUi() {
+     m_planTable->setColumnCount(9);
+     m_planTable->setHorizontalHeaderLabels({
+         QStringLiteral("Статус"),
+         QStringLiteral("Риск"),
+         QStringLiteral("Объект"),
+-        QStringLiteral("Размер источника"),
+-        QStringLiteral("Размер назначения"),
+-        QStringLiteral("SHA-256 источника"),
+-        QStringLiteral("SHA-256 назначения"),
++        QStringLiteral("Размер ист."),
++        QStringLiteral("Размер назн."),
++        QStringLiteral("SHA ист."),
++        QStringLiteral("SHA назн."),
+         QStringLiteral("Назначение"),
+         QStringLiteral("Предупреждение")
+     });
+-    m_planTable->horizontalHeader()->setStretchLastSection(true);
+-    m_planTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
++
++    const QStringList planHeaderTooltips = {
++        QStringLiteral("Статус операции"),
++        QStringLiteral("Уровень риска"),
++        QStringLiteral("Относительный путь объекта"),
++        QStringLiteral("Размер файла-источника"),
++        QStringLiteral("Размер файла назначения"),
++        QStringLiteral("SHA-256 файла-источника"),
++        QStringLiteral("SHA-256 файла назначения"),
++        QStringLiteral("Полный путь назначения"),
++        QStringLiteral("Предупреждение пользователю")
++    };
++    for (int i = 0; i < planHeaderTooltips.size(); ++i) {
++        if (auto* headerItem = m_planTable->horizontalHeaderItem(i)) {
++            headerItem->setToolTip(planHeaderTooltips[i]);
++        }
++    }
++
++    m_planTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
++    m_planTable->horizontalHeader()->setStretchLastSection(true);
++    m_planTable->horizontalHeader()->setMinimumSectionSize(70);
++    m_planTable->verticalHeader()->setVisible(false);
++    m_planTable->setWordWrap(false);
++    m_planTable->setColumnWidth(0, 105);
++    m_planTable->setColumnWidth(1, 80);
++    m_planTable->setColumnWidth(2, 260);
++    m_planTable->setColumnWidth(3, 95);
++    m_planTable->setColumnWidth(4, 95);
++    m_planTable->setColumnWidth(5, 120);
++    m_planTable->setColumnWidth(6, 120);
++    m_planTable->setColumnWidth(7, 260);
+     m_planTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+     m_planTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+@@ -227,7 +242,7 @@ QString MainWindow::activeRemoteDescription() const {
+     if (m_useCurlRemoteBackend && m_curlRemoteBackend) {
+         return QStringLiteral("активный FTP/SFTP backend: %1").arg(m_remoteProfile.safeDescription());
+     }
+-    return QStringLiteral("активный backend: локальный сервер-эмулятор");
++    return QStringLiteral("режим: локальный двухпанельный проводник");
+ }
+@@ -251,11 +266,11 @@ void MainWindow::chooseLocalRoot() {
+ }
+ 
+ void MainWindow::chooseRemoteRoot() {
+-    const QString path = QFileDialog::getExistingDirectory(this, QStringLiteral("Выберите серверный каталог-эмулятор"), m_remotePathEdit->text());
++    const QString path = QFileDialog::getExistingDirectory(this, QStringLiteral("Выберите правую папку локального проводника"), m_remotePathEdit->text());
+     if (!path.isEmpty()) {
+         setRemoteEmulatorRoot(path);
+-        appendLog(QStringLiteral("Правая панель переключена на локальный сервер-эмулятор: %1").arg(path));
++        appendLog(QStringLiteral("Правая панель переключена в режим локального проводника: %1").arg(path));
+     }
+ }
+@@ -263,9 +278,9 @@ void MainWindow::switchToEmulator() {
+     const QString root = m_remoteEmulatorBackend.root().isEmpty() ? defaultRemoteRoot() : m_remoteEmulatorBackend.root();
+     setRemoteEmulatorRoot(root);
+-    appendLog(QStringLiteral("Включён сервер-эмулятор: %1").arg(root));
++    appendLog(QStringLiteral("Включён локальный двухпанельный проводник: %1").arg(root));
+ }
+@@ -294,9 +309,9 @@ void MainWindow::configureRemoteConnection() {
+             QStringLiteral("libcurl не подключён"),
+-            QStringLiteral("Профиль сохранён, но проект собран без libcurl. Для настоящего FTP/SFTP backend пересоберите проект с параметром -DSECURETRANSFER_WITH_CURL=ON."));
+-        m_remoteBackendLabel->setText(QStringLiteral("FTP/SFTP профиль подготовлен: %1. Активен сервер-эмулятор, так как libcurl не подключён.")
++            QStringLiteral("Профиль сохранён, но проект собран без libcurl. Для настоящего FTP/SFTP backend пересоберите проект с параметром -DSECURETRANSFER_WITH_CURL=ON. Сейчас активен локальный двухпанельный проводник."));
++        m_remoteBackendLabel->setText(QStringLiteral("FTP/SFTP профиль подготовлен: %1. Активен локальный проводник, так как libcurl не подключён.")
+             .arg(m_remoteProfile.safeDescription()));
+-        appendLog(QStringLiteral("Профиль удалённого подключения подготовлен, но libcurl не подключён: %1").arg(m_remoteProfile.safeDescription()));
++        appendLog(QStringLiteral("Профиль удалённого подключения подготовлен, но libcurl не подключён. Продолжается работа локального проводника: %1").arg(m_remoteProfile.safeDescription()));
+         return;
+     }
+@@ -650,28 +665,7 @@ void MainWindow::cancelTransferQueue() {
+ }
+ 
+ QString MainWindow::formatBytes(qint64 bytes) const {
+-    if (bytes < 0) {
+-        return QStringLiteral("-");
+-    }
+-
+-    static const char* units[] = {"Б", "КБ", "МБ", "ГБ", "ТБ"};
+-    double value = static_cast<double>(bytes);
+-    int unitIndex = 0;
+-    while (value >= 1024.0 && unitIndex < 4) {
+-        value /= 1024.0;
+-        ++unitIndex;
+-    }
+-
+-    if (unitIndex == 0) {
+-        return QStringLiteral("%1 %2").arg(bytes).arg(QString::fromUtf8(units[unitIndex]));
+-    }
+-    return QStringLiteral("%1 %2").arg(value, 0, 'f', 2).arg(QString::fromUtf8(units[unitIndex]));
++    return ui::formatBytesRu(bytes);
+ }
+diff --git a/forms/MainWindow.ui b/forms/MainWindow.ui
+--- a/forms/MainWindow.ui
++++ b/forms/MainWindow.ui
+@@ -47,7 +47,7 @@
+        <widget class="QLabel" name="remoteLabel">
+         <property name="text">
+-         <string>Удалённая сторона:</string>
++         <string>Правая панель:</string>
+         </property>
+        </widget>
+@@ -72,7 +72,7 @@
+        <widget class="QPushButton" name="chooseRemoteButton">
+         <property name="text">
+-         <string>Сервер-эмулятор...</string>
++         <string>Правая папка...</string>
+         </property>
+        </widget>
+@@ -88,7 +88,7 @@
+        <widget class="QPushButton" name="emulatorButton">
+         <property name="text">
+-         <string>Вернуться к эмулятору</string>
++         <string>Локальный проводник</string>
+         </property>
+        </widget>
+diff --git a/docs/stage6_2_ui_polish.md b/docs/stage6_2_ui_polish.md
+new file mode 100644
+--- /dev/null
++++ b/docs/stage6_2_ui_polish.md
+@@ -0,0 +1,45 @@
++# Stage 6.2 — визуальная доводка интерфейса
++
++## Цель
++
++Этап устраняет мелкие графические недочёты и усиливает позиционирование локального серверного эмулятора. После доработки правая панель воспринимается не как тестовая заглушка, а как самостоятельный режим локального двухпанельного проводника.
++
++## Реализованные изменения
++
++### 1. Иконки правой панели
++
++`RemoteFileModel` теперь назначает иконки объектам правой панели. Для папок используется системная иконка каталога, для файлов — системная иконка файла. Это делает правую панель визуально ближе к обычному файловому проводнику.
++
++### 2. Единый русский формат размера
++
++Добавлен общий модуль:
++
++```text
++src/ui/FormatUtils.h
++src/ui/FormatUtils.cpp
++```
++
++Он используется и в левой панели, и в правой панели, и в очереди передачи. Размеры отображаются в виде:
++
++```text
++99 байт
++1,5 КБ
++48 КБ
++2,3 МБ
++128 МБ
++1,2 ГБ
++```
++
++### 3. Читабельная таблица предварительного анализа
++
++Заголовки длинных колонок сокращены, а полные описания перенесены в tooltip. Также настроены стартовые ширины колонок и интерактивное изменение ширины пользователем.
++
++### 4. Режим локального двухпанельного проводника
++
++Термин «сервер-эмулятор» заменён в пользовательских местах на «локальный двухпанельный проводник» или «правая папка». Это подчёркивает, что локальный режим является не только тестовым инструментом, но и полезной функцией программы.
++
++## Формулировка для отчёта
++
++Дополнительным преимуществом SecureTransfer является локальный двухпанельный режим. В этом режиме приложение может использоваться без FTP/SFTP подключения как безопасный файловый проводник: пользователь выбирает две локальные папки, выполняет предварительный анализ передачи, видит совпадения и перезаписи, а также может создать резервную копию перед заменой файла.

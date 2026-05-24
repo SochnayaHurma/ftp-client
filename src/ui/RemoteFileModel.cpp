@@ -1,8 +1,11 @@
 #include "RemoteFileModel.h"
+#include "FormatUtils.h"
 
+#include <QApplication>
 #include <QDateTime>
 #include <QFileInfo>
 #include <QRegularExpression>
+#include <QStyle>
 
 RemoteFileModel::RemoteFileModel(QObject* parent)
     : QStandardItemModel(parent) {
@@ -87,6 +90,8 @@ bool RemoteFileModel::reload(QString* error) {
         }
 
         auto* nameItem = new QStandardItem(info.name.isEmpty() ? QFileInfo(info.absolutePath).fileName() : info.name);
+        nameItem->setIcon(iconForObject(info));
+
         auto* typeItem = new QStandardItem(info.isDirectory ? QStringLiteral("Папка") : QStringLiteral("Файл"));
         auto* sizeItem = new QStandardItem(formatSize(info));
         auto* modifiedItem = new QStandardItem(info.modified.isValid()
@@ -132,17 +137,13 @@ QString RemoteFileModel::formatSize(const stl::StorageObjectInfo& info) const {
         return QStringLiteral("-");
     }
 
-    if (info.size < 1024) {
-        return QStringLiteral("%1 Б").arg(info.size);
-    }
+    return ui::formatBytesRu(info.size);
+}
 
-    const double kb = static_cast<double>(info.size) / 1024.0;
-    if (kb < 1024.0) {
-        return QStringLiteral("%1 КБ").arg(kb, 0, 'f', 1);
-    }
-
-    const double mb = kb / 1024.0;
-    return QStringLiteral("%1 МБ").arg(mb, 0, 'f', 1);
+QIcon RemoteFileModel::iconForObject(const stl::StorageObjectInfo& info) const {
+    return QApplication::style()->standardIcon(
+        info.isDirectory ? QStyle::SP_DirIcon : QStyle::SP_FileIcon
+    );
 }
 
 bool RemoteFileModel::acceptsObject(const stl::StorageObjectInfo& info) const {
