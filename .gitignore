@@ -1,0 +1,12 @@
+build/
+*.user
+*.db
+*.sqlite
+.stl_backup/
+
+docs/
+demo_data/
+deliverables/
+build/
+README.md
+CMakeLists.txt.user
