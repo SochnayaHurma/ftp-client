@@ -447,16 +447,11 @@ QVector<StorageObjectInfo> CurlRemoteStorage::enumerate(const QString& absoluteP
         return result;
     }
 
-    // Важно: для реальных FTP серверов нельзя сначала доверять objectInfo()/NOBODY
-    // при проверке каталога. Некоторые серверы успешно принимают upload, но неверно
-    // отвечают на SIZE/HEAD для папки. Поэтому для текущей директории сразу пробуем LIST.
     QByteArray listing;
     QString listError;
     bool dirListOnlyMode = false;
     bool listed = performDirectoryList(m_profile, makeUrl(remotePath, true), false, &listing, &listError);
 
-    // Если обычный LIST не поддержан, пробуем NLST/DIRLISTONLY. Типы объектов в этом
-    // режиме могут быть неизвестны, но хотя бы имена будут видны пользователю.
     if (!listed) {
         listing.clear();
         QString nlstError;
@@ -502,8 +497,6 @@ QVector<StorageObjectInfo> CurlRemoteStorage::enumerate(const QString& absoluteP
         } else {
             child = objectInfo(childPath, calculateHash);
             if (!child.valid || !child.exists) {
-                // Fallback для NLST: сервер отдал имя, значит объект существует, но тип
-                // мог быть недоступен. Показываем как файл, чтобы пользователь хотя бы видел listing.
                 child.valid = true;
                 child.exists = true;
                 child.isDirectory = false;
@@ -865,4 +858,4 @@ bool CurlRemoteStorage::ensureRemoteParentDirectories(const QString& remotePath,
     return true;
 }
 
-} // namespace stl
+}

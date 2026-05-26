@@ -147,4 +147,4 @@ QString ConnectionProfileStore::normalizedName(const QString& name) const {
     return name.trimmed();
 }
 
-} // namespace stl
+}

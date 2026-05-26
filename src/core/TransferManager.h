@@ -57,4 +57,4 @@ private:
                             QStringList& messages) const;
 };
 
-} // namespace stl
+} 

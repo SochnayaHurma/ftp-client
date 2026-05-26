@@ -81,4 +81,4 @@ inline QString directionToText(TransferDirection direction) {
         : QStringLiteral("Скачивание с сервера");
 }
 
-} // namespace stl
+} 

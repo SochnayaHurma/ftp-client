@@ -82,4 +82,4 @@ inline QVector<QueueItem> buildQueueFromPlan(const QVector<PreflightItem>& plan)
     return queue;
 }
 
-} // namespace stl
+} 
